@@ -1,10 +1,11 @@
 // embed-meta — injects per-mint X Player Card meta tags into /embed/:mint.
-// This is THE mechanism that renders the tradeable terminal inside a tweet:
-// twitter:card=player + twitter:player=<this page> makes X show a cover with a
-// Play button, and tapping Play loads this exact URL as an iframe in the post.
-// Coin branding (name/symbol/image) comes live from the trends-exec VPS.
+// twitter:card=player + twitter:player=<this page> makes X render a cover with a
+// Play button; tapping Play loads this URL as an iframe in the tweet (the terminal).
+// Branding (name/symbol/image) comes from Supabase token_launches — the VPS is not
+// reachable from Netlify's edge runtime, but Supabase is.
 
-const VPS = 'https://194-163-134-79.sslip.io';
+const SUPABASE_URL = 'https://xtkacuezimrxdgjpxujk.supabase.co';
+const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh0a2FjdWV6aW1yeGRnanB4dWprIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxMTkyMjEsImV4cCI6MjA4ODY5NTIyMX0.Df0gLhpCe_zuKZz3ynDquyXCG6qSvZv3DJDIglwLdkw';
 
 export default async (request: Request, context: { next: () => Promise<Response> }) => {
   const url = new URL(request.url);
@@ -17,25 +18,23 @@ export default async (request: Request, context: { next: () => Promise<Response>
   let symbol = 'COIN';
   let image = `${url.origin}/trends-logo.jpg`;
   try {
-    const r = await fetch(`${VPS}/coininfo`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ mints: [mint] }),
-      signal: AbortSignal.timeout(4000),
-    });
-    const j = await r.json();
-    const c = j?.coins?.[mint];
+    const r = await fetch(
+      `${SUPABASE_URL}/rest/v1/token_launches?token_mint=eq.${mint}&select=name,symbol,image_url&limit=1`,
+      { headers: { apikey: ANON, authorization: `Bearer ${ANON}` }, signal: AbortSignal.timeout(5000) },
+    );
+    const rows = await r.json();
+    const c = Array.isArray(rows) ? rows[0] : null;
     if (c) {
       if (c.name) name = String(c.name);
       if (c.symbol) symbol = String(c.symbol);
-      if (c.image) image = String(c.image);
+      if (c.image_url) image = String(c.image_url);
     }
   } catch { /* fall back to defaults — the card still renders */ }
 
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   const playerUrl = `${url.origin}/embed/${mint}`;
-  const title = `$${esc(symbol)} — ${esc(name)} on Trends`;
-  const desc = `Tap Play to trade $${esc(symbol)} right here inside X`;
+  const title = `\$${esc(symbol)} — ${esc(name)} on Trends`;
+  const desc = `Tap Play to trade \$${esc(symbol)} right here inside X`;
   const tags = [
     `<meta name="twitter:card" content="player" />`,
     `<meta name="twitter:title" content="${title}" />`,
@@ -50,8 +49,8 @@ export default async (request: Request, context: { next: () => Promise<Response>
     `<meta property="og:url" content="${esc(playerUrl)}" />`,
   ].join('\n    ');
 
-  // Strip the index.html default twitter:/og: tags so there's ONLY the player card
-  // on /embed/* — duplicate twitter:card tags make X fall back to the first (summary).
+  // Strip index.html's default twitter:/og: tags so ONLY the player card is present
+  // (duplicate twitter:card would make X fall back to the first = summary).
   const html = (await res.text()).replace(/[ \t]*<meta[^>]+(?:name="twitter:[^"]*"|property="og:[^"]*")[^>]*>\s*/gi, '');
   return new Response(html.replace('</head>', `    ${tags}\n  </head>`), {
     status: res.status,
