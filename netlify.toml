@@ -1,0 +1,25 @@
+[build]
+  command = "npm install && npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback — every route serves the app shell.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# IMPORTANT: no X-Frame-Options anywhere — X must be able to iframe /embed/* as a
+# player card. Do not add frame-blocking headers to this site.
+
+# Per-mint player-card meta tags for tweet embeds.
+[[edge_functions]]
+  path = "/embed/*"
+  function = "embed-meta"
