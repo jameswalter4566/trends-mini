@@ -50,7 +50,9 @@ export default async (request: Request, context: { next: () => Promise<Response>
     `<meta property="og:url" content="${esc(playerUrl)}" />`,
   ].join('\n    ');
 
-  const html = await res.text();
+  // Strip the index.html default twitter:/og: tags so there's ONLY the player card
+  // on /embed/* — duplicate twitter:card tags make X fall back to the first (summary).
+  const html = (await res.text()).replace(/[ \t]*<meta[^>]+(?:name="twitter:[^"]*"|property="og:[^"]*")[^>]*>\s*/gi, '');
   return new Response(html.replace('</head>', `    ${tags}\n  </head>`), {
     status: res.status,
     headers: { 'content-type': 'text/html; charset=utf-8' },
