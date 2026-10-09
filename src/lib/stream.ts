@@ -92,7 +92,33 @@ export function openWatch(mint: string, onEvent: (e: WatchEvent) => void): () =>
   };
 }
 
-export type CoinInfo = { symbol?: string; name?: string; image?: string; priceUsd?: number; priceSol?: number; mc?: number; venue?: string | null; bonded?: boolean };
+export type CoinInfo = { symbol?: string; name?: string; image?: string; priceUsd?: number; priceSol?: number; mc?: number; vol24hUsd?: number; change24h?: number | null; venue?: string | null; launchpad?: string | null; bonded?: boolean; createdAt?: number | null };
+
+export type Holders = { holders: number; top10Pct: number; topHolders?: { owner: string; amount: number }[] };
+
+/** Real holder count + top-10 concentration from the VPS /holders resolver. */
+export async function fetchHolders(mint: string): Promise<Holders | null> {
+  try {
+    const r = await fetch(`${STREAM_BASE}/holders`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mint }) });
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (typeof j.holders !== 'number') return null;
+    return { holders: j.holders, top10Pct: j.top10Pct ?? 0, topHolders: j.topHolders };
+  } catch { return null; }
+}
+
+export type Socials = { website?: string; twitter?: string; telegram?: string; tiktok?: string };
+
+/** Socials from the token's metadata JSON (deterministic Supabase storage path). */
+export async function fetchSocials(mint: string): Promise<Socials> {
+  try {
+    const r = await fetch(`https://xtkacuezimrxdgjpxujk.supabase.co/storage/v1/object/public/post-media/tokens/token-${mint}.json`);
+    if (!r.ok) return {};
+    const j = await r.json();
+    const ext = j.extensions || {};
+    return { website: j.website ?? ext.website, twitter: j.twitter ?? ext.twitter, telegram: j.telegram ?? ext.telegram, tiktok: j.tiktok ?? ext.tiktok };
+  } catch { return {}; }
+}
 
 export async function fetchCoinInfo(mint: string): Promise<{ info: CoinInfo | null; solUsd: number }> {
   try {

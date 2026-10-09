@@ -1,11 +1,13 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { VersionedTransaction, Transaction } from '@solana/web3.js';
 import { supabase } from '../lib/supa';
 import { useWallet } from '../lib/wallet';
 import { useToast } from '../lib/toast';
 
+type Mode = 'self' | 'trendspay';
 type Venue = 'pump' | 'meteora';
+type XCreator = { handle: string; name: string; avatar: string | null; followers?: number | null; verified?: boolean };
 
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
@@ -15,16 +17,19 @@ function b64ToBytes(b64: string): Uint8Array {
 }
 
 /**
- * Launch — pump.fun or Meteora, NON-CUSTODIAL. The mini-launch edge fn builds the
- * create tx with YOUR wallet as creator + payer (mint partial-signed server-side,
- * Meteora SDK stays off this bundle), you sign in Privy, we send + record. Creator
- * fees accrue to YOUR wallet.
+ * Launch — two modes, mirroring the trends.fm browser Launchpad:
+ *  • Self: pump.fun OR Meteora tile, NON-CUSTODIAL (you are creator+payer, fees to you).
+ *  • Trends Pay: launch for a creator on 𝕏 — their avatar becomes the coin, trading
+ *    fees are directed to them (server-signed via trendspay-launch). Creator-fee
+ *    allocation slider included.
  */
 export default function Launch() {
   const nav = useNavigate();
+  const [sp] = useSearchParams();
   const { connected, address, login, signAndSendTransaction } = useWallet();
   const { toast, node } = useToast();
 
+  const [mode, setMode] = useState<Mode>('self');
   const [venue, setVenue] = useState<Venue>('pump');
   const [name, setName] = useState('');
   const [symbol, setSymbol] = useState('');
@@ -33,19 +38,75 @@ export default function Launch() {
   const [img, setImg] = useState<File | null>(null);
   const [imgPreview, setImgPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  const [feePct, setFeePct] = useState(100);
 
-  const onImage = (f: File | null) => {
-    setImg(f);
-    setImgPreview(f ? URL.createObjectURL(f) : null);
+  // Trends Pay creator
+  const [creator, setCreator] = useState<XCreator | null>(null);
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState<XCreator[]>([]);
+  const [searching, setSearching] = useState(false);
+  const t = useRef<ReturnType<typeof setTimeout>>();
+
+  // Deep-linked from the Fees tab with a creator chosen → Trends Pay prefilled.
+  useEffect(() => {
+    const b = sp.get('beneficiary');
+    if (b) {
+      setMode('trendspay');
+      setCreator({ handle: b, name: sp.get('bname') || b, avatar: sp.get('bimg') });
+      setName((sp.get('bname') || `@${b}`).slice(0, 28));
+      setSymbol((sp.get('bname') || b).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TREND');
+    }
+  }, [sp]);
+
+  // X creator typeahead for Trends Pay.
+  useEffect(() => {
+    if (mode !== 'trendspay' || creator) { setResults([]); return; }
+    const term = q.trim().replace(/^@/, '');
+    if (term.length < 2) { setResults([]); setSearching(false); return; }
+    setSearching(true);
+    if (t.current) clearTimeout(t.current);
+    t.current = setTimeout(async () => {
+      try { const { data } = await supabase.functions.invoke('x-creator-search', { body: { q: term } }); setResults(Array.isArray(data?.creators) ? data.creators : Array.isArray(data) ? data : []); }
+      catch { setResults([]); } finally { setSearching(false); }
+    }, 300);
+    return () => { if (t.current) clearTimeout(t.current); };
+  }, [q, mode, creator]);
+
+  const pickCreator = (c: XCreator) => {
+    setCreator(c);
+    setName((c.name || `@${c.handle}`).slice(0, 28));
+    setSymbol((c.name || c.handle).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8) || 'TREND');
+    setResults([]); setQ('');
   };
 
-  const canLaunch = connected && name.trim() && symbol.trim() && img && !busy;
+  const onImage = (f: File | null) => { setImg(f); setImgPreview(f ? URL.createObjectURL(f) : null); };
 
-  const launch = async () => {
+  // ---- Trends Pay: server-signed launch for the X creator (fees to them) ----
+  const launchTrendsPay = async () => {
+    if (!creator) { toast('Pick a creator on 𝕏'); return; }
+    if (!name.trim() || !symbol.trim()) { toast('Add a name + ticker'); return; }
+    try {
+      setBusy('Launching for @' + creator.handle + '…');
+      const { data, error } = await supabase.functions.invoke('trendspay-launch', {
+        body: {
+          name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(),
+          coverUrl: creator.avatar, handle: creator.handle,
+          twitter: `x.com/${creator.handle}`, tokenizedBy: null, devBuySol: 0,
+        },
+      });
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(String(data.error));
+      toast(`$${symbol.trim().toUpperCase()} launched for @${creator.handle} ✓`);
+      setTimeout(() => nav(`/t/${data.mint}`), 900);
+    } catch (e) { toast(e instanceof Error ? e.message : 'Launch failed'); }
+    finally { setBusy(null); }
+  };
+
+  // ---- Self: non-custodial pump/meteora via mini-launch ----
+  const launchSelf = async () => {
     if (!connected || !address) { login(); return; }
     if (!img) { toast('Add a token image'); return; }
     try {
-      // 1) Host the image (anon storage upload — same path trends.fm web uses).
       setBusy('Uploading image…');
       const ext = img.type.includes('png') ? 'png' : img.type.includes('webp') ? 'webp' : 'jpeg';
       const path = `tokens/mini-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
@@ -53,64 +114,99 @@ export default function Launch() {
       if (up.error) throw new Error('image upload failed: ' + up.error.message);
       const imageUrl = supabase.storage.from('post-media').getPublicUrl(path).data.publicUrl;
 
-      // 2) Server builds the create tx (user = creator + payer; mint partial-signed).
       setBusy('Building launch…');
       const { data: built, error: bErr } = await supabase.functions.invoke('mini-launch', {
-        body: {
-          action: 'build', venue, name: name.trim(), symbol: symbol.trim().toUpperCase(),
-          description: desc.trim(), imageUrl, userWallet: address, devBuySol: Number(devBuy) || 0,
-        },
+        body: { action: 'build', venue, name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(), imageUrl, userWallet: address, devBuySol: Number(devBuy) || 0 },
       });
       if (bErr) throw new Error(bErr.message);
       if (built?.error) throw new Error(built.detail ? `${built.error}: ${JSON.stringify(built.detail).slice(0, 120)}` : String(built.error));
 
-      // 3) You sign + we send (Privy sheet pops).
       setBusy('Sign in wallet…');
       const bytes = b64ToBytes(built.txBase64);
       let tx: VersionedTransaction | Transaction;
       try { tx = VersionedTransaction.deserialize(bytes); } catch { tx = Transaction.from(bytes); }
       const sig = await signAndSendTransaction(tx);
 
-      // 4) Record so the coin shows on trends.fm + here instantly.
       setBusy('Recording…');
       await supabase.functions.invoke('mini-launch', {
-        body: {
-          action: 'record', venue, mint: built.mint, pool: built.pool ?? null, signature: sig,
-          name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(),
-          imageUrl, metadataUri: built.metadataUri ?? null, userWallet: address,
-        },
+        body: { action: 'record', venue, mint: built.mint, pool: built.pool ?? null, signature: sig, name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(), imageUrl, metadataUri: built.metadataUri ?? null, userWallet: address },
       });
-
       toast(`$${symbol.trim().toUpperCase()} launched ✓`);
       setTimeout(() => nav(`/t/${built.mint}`), 900);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : 'Launch failed');
-    } finally {
-      setBusy(null);
-    }
+    } catch (e) { toast(e instanceof Error ? e.message : 'Launch failed'); }
+    finally { setBusy(null); }
   };
+
+  const canSelf = connected && name.trim() && symbol.trim() && img && !busy;
+  const canTp = !!creator && name.trim() && symbol.trim() && !busy;
 
   return (
     <div>
       <div className="page-head"><span className="page-title">Launch a coin</span></div>
 
       <div className="section" style={{ paddingTop: 0 }}>
+        {/* Launchpad mode tiles */}
         <span className="label">Launchpad</span>
-        <button className={'venue-tile' + (venue === 'pump' ? ' on' : '')} onClick={() => setVenue('pump')}>
-          <img src="https://pump.fun/favicon.ico" alt="" onError={(e) => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }} />
-          <span>
-            <span className="venue-title">Pump.fun</span>
-            <div className="venue-sub">Bonding curve on pump.fun · creator fees accrue to YOUR wallet</div>
-          </span>
-        </button>
-        <button className={'venue-tile' + (venue === 'meteora' ? ' on' : '')} onClick={() => setVenue('meteora')}>
+        <button className={'venue-tile' + (mode === 'self' ? ' on' : '')} onClick={() => setMode('self')}>
           <img src="/trends-logo.jpg" alt="" />
-          <span>
-            <span className="venue-title">Trends · Meteora</span>
-            <div className="venue-sub">Trends DBC curve · 4% fees, you are the pool creator</div>
-          </span>
+          <span><span className="venue-title">Launch yourself</span><div className="venue-sub">Pump.fun or Meteora · you're the creator, fees to you</div></span>
+        </button>
+        <button className={'venue-tile' + (mode === 'trendspay' ? ' on' : '')} onClick={() => setMode('trendspay')}>
+          <span style={{ width: 30, height: 30, borderRadius: 8, background: '#22C55E', display: 'grid', placeItems: 'center', color: '#000', fontWeight: 900 }}>𝕏</span>
+          <span><span className="venue-title">Trends Pay</span><div className="venue-sub">Launch for a creator on 𝕏 · fees directed to them</div></span>
         </button>
 
+        {/* Self: venue sub-choice */}
+        {mode === 'self' && (
+          <>
+            <div className="spacer" />
+            <span className="label">Pairing / curve</span>
+            <div className="row">
+              <button className={'pill' + (venue === 'pump' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setVenue('pump')}>Pump.fun</button>
+              <button className={'pill' + (venue === 'meteora' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setVenue('meteora')}>Meteora (Trends)</button>
+            </div>
+          </>
+        )}
+
+        {/* Trends Pay: creator search / card */}
+        {mode === 'trendspay' && (
+          <>
+            <div className="spacer" />
+            <span className="label">Creator on 𝕏</span>
+            {creator ? (
+              <div className="card" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                {creator.avatar ? <img src={creator.avatar} alt="" style={{ width: 40, height: 40, borderRadius: 999, objectFit: 'cover' }} /> : <span className="coin-img" />}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 900, fontSize: 14 }}>{creator.name}</div>
+                  <div className="coin-name">@{creator.handle}{creator.followers != null ? ` · ${Intl.NumberFormat('en', { notation: 'compact' }).format(creator.followers)} followers` : ''}</div>
+                </div>
+                <button className="btn ghost sm" onClick={() => { setCreator(null); setName(''); setSymbol(''); }}>Change</button>
+              </div>
+            ) : (
+              <>
+                <input className="inp" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search a creator on 𝕏…" />
+                {searching && <div className="loading"><div className="spin" /></div>}
+                {results.map((c) => (
+                  <div key={c.handle} className="coin-row" onClick={() => pickCreator(c)} role="button">
+                    {c.avatar ? <img className="coin-img" src={c.avatar} alt="" /> : <span className="coin-img" />}
+                    <div className="coin-main"><div className="coin-sym">{c.name || c.handle}</div><div className="coin-name">@{c.handle}</div></div>
+                  </div>
+                ))}
+              </>
+            )}
+          </>
+        )}
+
+        {/* Creator Fees allocation */}
+        <div className="spacer" />
+        <div className="card">
+          <div className="fee-head"><span className="label" style={{ margin: 0 }}>Creator fees</span><b style={{ fontSize: 15 }}>{feePct}%</b></div>
+          <input type="range" min={0} max={100} value={feePct} onChange={(e) => setFeePct(Number(e.target.value))} className="glass-slider"
+            style={{ background: `linear-gradient(90deg, #22C55E ${feePct}%, rgba(255,255,255,0.08) ${feePct}%)` }} />
+          <div className="hint">{mode === 'trendspay' ? `${feePct}% of trading fees go to @${creator?.handle || 'the creator'}.` : `${feePct}% of creator fees kept by you (the launcher).`}</div>
+        </div>
+
+        {/* Shared fields */}
         <div className="spacer" />
         <span className="label">Name</span>
         <input className="inp" value={name} onChange={(e) => setName(e.target.value)} maxLength={28} placeholder="My Coin" />
@@ -120,28 +216,35 @@ export default function Launch() {
         <div className="spacer" />
         <span className="label">Description (optional)</span>
         <input className="inp" value={desc} onChange={(e) => setDesc(e.target.value)} maxLength={300} placeholder="What is this coin?" />
-        <div className="spacer" />
-        <span className="label">Dev buy (SOL{venue === 'pump' ? ', min 0.001' : ', optional'})</span>
-        <input className="inp" value={devBuy} onChange={(e) => setDevBuy(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" style={{ width: 120 }} />
-        <div className="spacer" />
-        <span className="label">Image</span>
-        <label className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}>
-          {imgPreview
-            ? <img src={imgPreview} alt="" style={{ width: 54, height: 54, borderRadius: 10, objectFit: 'cover' }} />
-            : <span style={{ width: 54, height: 54, borderRadius: 10, background: 'rgba(255,255,255,0.07)', display: 'grid', placeItems: 'center', color: '#52525b', fontSize: 22 }}>+</span>}
-          <span style={{ fontSize: 13, color: '#a1a1aa' }}>{img ? img.name : 'Tap to choose the token image'}</span>
-          <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: 'none' }} onChange={(e) => onImage(e.target.files?.[0] ?? null)} />
-        </label>
+
+        {mode === 'self' && (
+          <>
+            <div className="spacer" />
+            <span className="label">Dev buy (SOL)</span>
+            <input className="inp" value={devBuy} onChange={(e) => setDevBuy(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" style={{ width: 120 }} />
+            <div className="spacer" />
+            <span className="label">Image</span>
+            <label className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}>
+              {imgPreview ? <img src={imgPreview} alt="" style={{ width: 54, height: 54, borderRadius: 10, objectFit: 'cover' }} />
+                : <span style={{ width: 54, height: 54, borderRadius: 10, background: 'rgba(255,255,255,0.07)', display: 'grid', placeItems: 'center', color: '#52525b', fontSize: 22 }}>+</span>}
+              <span style={{ fontSize: 13, color: '#a1a1aa' }}>{img ? img.name : 'Tap to choose the token image'}</span>
+              <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" style={{ display: 'none' }} onChange={(e) => onImage(e.target.files?.[0] ?? null)} />
+            </label>
+          </>
+        )}
+        {mode === 'trendspay' && creator?.avatar && (
+          <div className="hint" style={{ marginTop: 8 }}>The coin image will be @{creator.handle}'s 𝕏 avatar.</div>
+        )}
 
         <div className="spacer" /><div className="spacer" />
-        {connected ? (
-          <button className="btn green" disabled={!canLaunch} onClick={launch}>
-            {busy ? <><span className="spin" /> {busy}</> : `Launch on ${venue === 'pump' ? 'Pump.fun' : 'Meteora'} →`}
-          </button>
+        {mode === 'self' ? (
+          connected
+            ? <button className="btn green" disabled={!canSelf} onClick={launchSelf}>{busy ? <><span className="spin dark" /> {busy}</> : `Launch on ${venue === 'pump' ? 'Pump.fun' : 'Meteora'} →`}</button>
+            : <button className="btn" onClick={() => login()}>Sign in with 𝕏 to launch</button>
         ) : (
-          <button className="btn" onClick={() => login()}>Sign in with 𝕏 to launch</button>
+          <button className="btn green" disabled={!canTp} onClick={launchTrendsPay}>{busy ? <><span className="spin dark" /> {busy}</> : creator ? `Launch for @${creator.handle} →` : 'Pick a creator first'}</button>
         )}
-        <div className="hint" style={{ textAlign: 'center' }}>You pay the launch from your wallet and keep the creator fees.</div>
+        <div className="hint" style={{ textAlign: 'center' }}>{mode === 'self' ? 'You pay the launch and keep the creator fees.' : 'Trends launches it and directs trading fees to the creator.'}</div>
       </div>
       {node}
     </div>
