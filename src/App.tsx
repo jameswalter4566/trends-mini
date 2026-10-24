@@ -5,6 +5,7 @@ import Launch from './pages/Launch';
 import Fees from './pages/Fees';
 import Profile from './pages/Profile';
 import Coin from './pages/Coin';
+import XCallback from './pages/XCallback';
 
 /**
  * Trends Mini — the X-embeddable terminal. Phone-width shell with a 5-tab footer
@@ -14,7 +15,7 @@ import Coin from './pages/Coin';
  */
 export default function App() {
   const { pathname } = useLocation();
-  const isEmbed = pathname.startsWith('/embed/');
+  const isEmbed = pathname.startsWith('/embed/') || pathname === '/x-callback';
 
   return (
     <div className={isEmbed ? 'shell embed' : 'shell'}>
@@ -27,6 +28,7 @@ export default function App() {
           <Route path="/profile" element={<Profile />} />
           <Route path="/t/:mint" element={<Coin />} />
           <Route path="/embed/:mint" element={<Coin embed />} />
+          <Route path="/x-callback" element={<XCallback />} />
           <Route path="*" element={<Tokens />} />
         </Routes>
       </main>
