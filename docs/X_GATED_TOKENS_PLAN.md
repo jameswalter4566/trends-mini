@@ -180,3 +180,20 @@ the X config (creator fee claiming + platform sweep).
 4. Mint-authority optics: hook configs force partner-held mint authority pre-grad —
    rug-checkers will flag it. Comms line needed ("revokes at graduation, enforced by
    Meteora's program").
+
+## 13. DECIDED (2026-10-26): two launch tiers (Hooked-style, per HOOKED_REVERSE_ENGINEERING.md)
+
+Mechanism = Hooked's FOMO gate (verified): Token-2022 hook + Instructions-sysvar introspection
+demanding the venue co-signer's signature; cfg {bump, co_signer@9, dev_wallet@41}; buys gated,
+sells free; dev wallet whitelisted (required dev buy opens the pool); hook auto-revoked at
+graduation. yolo-gate already implements this; fork = trendsgate.
+
+Delta: add `gate_start: i64` to cfg (73->81 bytes) + clock branch in Execute:
+- V1 "ANTI-BUNDLE": gate_start=0 — app-only from the first slot, block-zero bundling impossible.
+  Also blocks wallet-to-wallet sends pre-grad (no bundler consolidation). Trends co-sign ONLY.
+- V2 "OPEN PRESALE -> APP-ONLY": gate_start = launch+N min — any wallet/DEX during the window,
+  then app-only until graduation. Sells+sends always free. V2 config bakes Meteora fee scheduler
+  (~50% decaying to normal across the presale window) to tax window snipers.
+
+Venue policy: Trends co-signer only for both tiers (cryptographic, FOMO-class). FOMO/pump
+multi-venue = possible later tier; pump route-fingerprint is spoofable (Hooked admits it).
