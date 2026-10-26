@@ -31,22 +31,28 @@ export default async (request: Request, context: { next: () => Promise<Response>
     }
   } catch { /* fall back to defaults — the card still renders */ }
 
+  // EXACT shape of the proven bo1zlite.xcade.gg player card (renders a PLAY button
+  // in the tweet with no X approval): 1280x720 player + 1200x630 cover image with
+  // explicit og:image dimensions.
   const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
   const playerUrl = `${url.origin}/embed/${mint}`;
-  const title = `\$${esc(symbol)} — ${esc(name)} on Trends`;
-  const desc = `Tap Play to trade \$${esc(symbol)} right here inside X`;
+  const title = `\$${esc(symbol)} — ${esc(name)}, tradeable in the tweet`;
+  const desc = `Trade \$${esc(symbol)} right here on X. Tap PLAY — sign in with your X account, no install.`;
   const tags = [
-    `<meta name="twitter:card" content="player" />`,
-    `<meta name="twitter:title" content="${title}" />`,
-    `<meta name="twitter:description" content="${desc}" />`,
-    `<meta name="twitter:image" content="${esc(image)}" />`,
-    `<meta name="twitter:player" content="${esc(playerUrl)}" />`,
-    `<meta name="twitter:player:width" content="480" />`,
-    `<meta name="twitter:player:height" content="480" />`,
-    `<meta property="og:title" content="${title}" />`,
-    `<meta property="og:description" content="${desc}" />`,
-    `<meta property="og:image" content="${esc(image)}" />`,
-    `<meta property="og:url" content="${esc(playerUrl)}" />`,
+    `<meta name="twitter:card" content="player">`,
+    `<meta name="twitter:title" content="${title}">`,
+    `<meta name="twitter:description" content="${desc}">`,
+    `<meta name="twitter:image" content="${esc(image)}">`,
+    `<meta name="twitter:player" content="${esc(playerUrl)}">`,
+    `<meta name="twitter:player:width" content="1280">`,
+    `<meta name="twitter:player:height" content="720">`,
+    `<meta property="og:type" content="website">`,
+    `<meta property="og:url" content="${esc(playerUrl)}">`,
+    `<meta property="og:title" content="${title}">`,
+    `<meta property="og:description" content="${desc}">`,
+    `<meta property="og:image" content="${esc(image)}">`,
+    `<meta property="og:image:width" content="1200">`,
+    `<meta property="og:image:height" content="630">`,
   ].join('\n    ');
 
   // Strip index.html's default twitter:/og: tags so ONLY the player card is present
