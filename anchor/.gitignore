@@ -5,3 +5,4 @@ test-ledger
 # keep the program keypair out of git (it is the upgrade authority seed)
 trendsgate-program-keypair.json
 trends-gate-cosigner.json
+.settle-key.txt
