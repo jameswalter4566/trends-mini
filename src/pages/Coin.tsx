@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
 import { PublicKey } from '@solana/web3.js';
 import { openWatch, fetchCoinInfo, fetchHolders, fetchSocials, buildSwapTx, type CoinInfo, type Holders, type Socials, type LiveBar } from '../lib/stream';
+import { supabase } from '../lib/supa';
 import { useWallet } from '../lib/wallet';
 import { useToast } from '../lib/toast';
 import { fmtUsd, fmtPrice, fmtPct, fmtNum, ago, trunc } from '../lib/fmt';
@@ -35,6 +36,51 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
   const [busy, setBusy] = useState(false);
 
   const chartRef = useRef<HTMLDivElement>(null);
+
+  // Anti-bundle presale window
+  type Presale = { is_gated: boolean; post_window_mode: string | null; presale_status: string | null; presale_end: string | null; presale_raised_sol: number | null; presale_contributors: number | null; per_wallet_cap_sol: number | null };
+  const [presale, setPresale] = useState<Presale | null>(null);
+  const [nowMs, setNowMs] = useState(Date.now());
+  const [contribAmt, setContribAmt] = useState('');
+  const [abBusy, setAbBusy] = useState(false);
+
+  const fetchPresale = async () => {
+    const { data } = await supabase.from('token_launches')
+      .select('is_gated, post_window_mode, presale_status, presale_end, presale_raised_sol, presale_contributors, per_wallet_cap_sol')
+      .eq('token_mint', mint).maybeSingle();
+    setPresale((data as Presale | null) ?? null);
+  };
+  useEffect(() => { fetchPresale(); const iv = setInterval(fetchPresale, 5000); return () => clearInterval(iv); }, [mint]);
+  useEffect(() => { const iv = setInterval(() => setNowMs(Date.now()), 500); return () => clearInterval(iv); }, []);
+
+  const endMs = presale?.presale_end ? new Date(presale.presale_end).getTime() : 0;
+  const windowOpen = !!presale?.is_gated && presale?.presale_status === 'open' && endMs > nowMs;
+  const windowSettling = !!presale?.is_gated && (presale?.presale_status === 'settling' || (presale?.presale_status === 'open' && endMs <= nowMs));
+  const remain = Math.max(0, Math.floor((endMs - nowMs) / 1000));
+  const mmss = `${Math.floor(remain / 60)}:${String(remain % 60).padStart(2, '0')}`;
+
+  const contribute = async () => {
+    if (!connected || !address) { login(); return; }
+    const sol = parseFloat(contribAmt); if (!(sol > 0)) { toast('Enter a SOL amount'); return; }
+    setAbBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('presale-contribute', { body: { mint, amountSol: sol } });
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(String(data.error));
+      toast(`Joined with ${sol} SOL ✓`); setContribAmt(''); fetchPresale();
+    } catch (e) { toast(e instanceof Error ? e.message : 'Contribute failed'); }
+    finally { setAbBusy(false); }
+  };
+  const withdraw = async () => {
+    setAbBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('presale-withdraw', { body: { mint } });
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(String(data.error));
+      toast(`Withdrew ${data.refundedSol} SOL ✓`); fetchPresale();
+    } catch (e) { toast(e instanceof Error ? e.message : 'Withdraw failed'); }
+    finally { setAbBusy(false); }
+  };
 
   // Branding + stats + socials + holders.
   useEffect(() => {
@@ -144,9 +190,42 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
         <Stat label="Age" value={ago(info?.createdAt) || '—'} />
       </div>
 
+      {/* Anti-bundle Buy Window */}
+      {(windowOpen || windowSettling) && (
+        <div className="section">
+          <div className="card" style={{ border: '1px solid rgba(60,194,221,0.45)', boxShadow: '0 0 0 1px rgba(60,194,221,0.15) inset' }}>
+            <div className="fee-head">
+              <span className="label" style={{ margin: 0, color: '#3CC2DD' }}>🛡 Buy Window · {windowOpen ? 'OPEN' : 'settling'}</span>
+              <b style={{ fontSize: 20, fontVariantNumeric: 'tabular-nums', color: windowOpen ? '#fff' : '#a1a1aa' }}>{windowOpen ? mmss : '···'}</b>
+            </div>
+            <div className="kv"><span>Raised</span><b>{(presale?.presale_raised_sol ?? 0).toFixed(3)} SOL</b></div>
+            <div className="kv"><span>Contributors</span><b>{presale?.presale_contributors ?? 0}</b></div>
+            <div className="kv"><span>After window</span><b>{presale?.post_window_mode === 'app_only' ? 'App-only · Trends + FOMO' : 'Open · trade everywhere'}</b></div>
+            {presale?.per_wallet_cap_sol != null && <div className="kv"><span>Per-wallet cap</span><b>{presale.per_wallet_cap_sol} SOL</b></div>}
+            {windowOpen ? (
+              <>
+                <div className="amt-row" style={{ marginTop: 12 }}>
+                  <input value={contribAmt} onChange={(e) => setContribAmt(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="0.0" />
+                  <span className="amt-unit">SOL</span>
+                </div>
+                <div className="preset-row">{[0.1, 0.5, 1, 2].map((p) => <button key={p} className="preset" onClick={() => setContribAmt(String(p))}>{p}</button>)}</div>
+                <button className="btn green" disabled={abBusy} onClick={contribute} style={{ marginTop: 8 }}>
+                  {abBusy ? <span className="spin dark" /> : !connected ? 'Sign in with 𝕏 to join' : 'Join the window'}
+                </button>
+                {connected && <button className="btn ghost sm" disabled={abBusy} onClick={withdraw} style={{ marginTop: 8 }}>Withdraw my contribution</button>}
+                <div className="hint">Everyone who joins is filled at the <b>same price</b> when the window closes — nothing to snipe. Withdraw anytime before close.</div>
+              </>
+            ) : (
+              <div className="hint" style={{ marginTop: 8 }}>Window closed — filling everyone pro-rata at one price. Your tokens will appear in your wallet shortly.</div>
+            )}
+          </div>
+        </div>
+      )}
+
       <div className="chart-box"><div ref={chartRef} style={{ width: '100%', height: '100%' }} /></div>
 
-      {/* Trade panel */}
+      {/* Trade panel (hidden while a Buy Window is live) */}
+      {!(windowOpen || windowSettling) && (
       <div className="section">
         <div className="seg">
           <button className={side === 'buy' ? 'on buy' : ''} onClick={() => setSide('buy')}>BUY</button>
@@ -182,6 +261,7 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
         </button>
         <div className="hint" style={{ textAlign: 'center' }}>You approve each trade in your wallet · ~1.5% slippage</div>
       </div>
+      )}
 
       {/* About */}
       <div className="section" style={{ paddingTop: 0 }}>

@@ -5,7 +5,7 @@ import { supabase } from '../lib/supa';
 import { useWallet } from '../lib/wallet';
 import { useToast } from '../lib/toast';
 
-type Mode = 'self' | 'trendspay';
+type Mode = 'self' | 'trendspay' | 'antibundle';
 type Venue = 'pump' | 'meteora';
 type XCreator = { handle: string; name: string; avatar: string | null; followers?: number | null; verified?: boolean };
 
@@ -39,6 +39,11 @@ export default function Launch() {
   const [imgPreview, setImgPreview] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [feePct, setFeePct] = useState(100);
+
+  // Anti-bundle presale
+  const [windowSec, setWindowSec] = useState(120);
+  const [abMode, setAbMode] = useState<'app_only' | 'open'>('app_only');
+  const [capSol, setCapSol] = useState('');
 
   // Trends Pay creator
   const [creator, setCreator] = useState<XCreator | null>(null);
@@ -137,8 +142,38 @@ export default function Launch() {
     finally { setBusy(null); }
   };
 
+  // ---- Anti-bundle: treasury-sponsored gated launch + presale window ----
+  const launchAntiBundle = async () => {
+    if (!connected || !address) { login(); return; }
+    if (!name.trim() || !symbol.trim()) { toast('Add a name + ticker'); return; }
+    if (!img) { toast('Add a token image'); return; }
+    try {
+      setBusy('Uploading image…');
+      const ext = img.type.includes('png') ? 'png' : img.type.includes('webp') ? 'webp' : 'jpeg';
+      const path = `tokens/ab-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      const up = await supabase.storage.from('post-media').upload(path, img, { contentType: img.type, upsert: true, cacheControl: '3600' });
+      if (up.error) throw new Error('image upload failed: ' + up.error.message);
+      const imageUrl = supabase.storage.from('post-media').getPublicUrl(path).data.publicUrl;
+
+      setBusy('Opening presale window…');
+      const { data, error } = await supabase.functions.invoke('anti-bundle-launch', {
+        body: {
+          action: 'launch', name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(),
+          imageUrl, windowSeconds: windowSec, mode: abMode, perWalletCapSol: capSol ? Number(capSol) : null,
+        },
+      });
+      if (error) throw new Error(error.message);
+      if (data?.error) throw new Error(data.detail ? `${data.error}: ${JSON.stringify(data.detail).slice(0, 120)}` : String(data.error));
+      toast(`$${symbol.trim().toUpperCase()} window opened ✓`);
+      setTimeout(() => nav(`/t/${data.mint}`), 900);
+    } catch (e) { toast(e instanceof Error ? e.message : 'Launch failed'); }
+    finally { setBusy(null); }
+  };
+
   const canSelf = connected && name.trim() && symbol.trim() && img && !busy;
   const canTp = !!creator && name.trim() && symbol.trim() && !busy;
+  const canAb = connected && name.trim() && symbol.trim() && img && !busy;
+  const winPct = ((windowSec - 60) / 240) * 100;
 
   return (
     <div>
@@ -155,6 +190,10 @@ export default function Launch() {
           <span style={{ width: 30, height: 30, borderRadius: 8, background: '#22C55E', display: 'grid', placeItems: 'center', color: '#000', fontWeight: 900 }}>𝕏</span>
           <span><span className="venue-title">Trends Pay</span><div className="venue-sub">Launch for a creator on 𝕏 · fees directed to them</div></span>
         </button>
+        <button className={'venue-tile' + (mode === 'antibundle' ? ' on' : '')} onClick={() => setMode('antibundle')}>
+          <span style={{ width: 30, height: 30, borderRadius: 8, background: '#3CC2DD', display: 'grid', placeItems: 'center', color: '#000', fontWeight: 900 }}>🛡</span>
+          <span><span className="venue-title">Anti-Bundle</span><div className="venue-sub">Fair presale window · unsnipeable · app-only or open</div></span>
+        </button>
 
         {/* Self: venue sub-choice */}
         {mode === 'self' && (
@@ -165,6 +204,30 @@ export default function Launch() {
               <button className={'pill' + (venue === 'pump' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setVenue('pump')}>Pump.fun</button>
               <button className={'pill' + (venue === 'meteora' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setVenue('meteora')}>Meteora (Trends)</button>
             </div>
+          </>
+        )}
+
+        {/* Anti-bundle: presale window + post-window mode */}
+        {mode === 'antibundle' && (
+          <>
+            <div className="spacer" />
+            <span className="label">Presale window</span>
+            <div className="card">
+              <div className="fee-head"><span className="label" style={{ margin: 0 }}>Duration</span><b style={{ fontSize: 15 }}>{windowSec >= 60 ? `${Math.floor(windowSec / 60)}:${String(windowSec % 60).padStart(2, '0')}` : `${windowSec}s`}</b></div>
+              <input type="range" min={60} max={300} step={15} value={windowSec} onChange={(e) => setWindowSec(Number(e.target.value))} className="glass-slider"
+                style={{ background: `linear-gradient(90deg, #3CC2DD ${winPct}%, rgba(255,255,255,0.08) ${winPct}%)` }} />
+              <div className="hint">Any wallet sends SOL during the window. At close, everyone is filled pro-rata at the <b>same price</b> — nothing to snipe or bundle.</div>
+            </div>
+            <div className="spacer" />
+            <span className="label">After the window</span>
+            <div className="row">
+              <button className={'pill' + (abMode === 'app_only' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setAbMode('app_only')}>App-only</button>
+              <button className={'pill' + (abMode === 'open' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setAbMode('open')}>Open</button>
+            </div>
+            <div className="hint">{abMode === 'app_only' ? 'Unbundleable: buyable only through Trends & FOMO until graduation. Pump.fun locked out.' : 'Fair window, then trades everywhere like a normal coin.'}</div>
+            <div className="spacer" />
+            <span className="label">Per-wallet cap (optional, SOL)</span>
+            <input className="inp" value={capSol} onChange={(e) => setCapSol(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="no cap" style={{ width: 140 }} />
           </>
         )}
 
@@ -222,6 +285,10 @@ export default function Launch() {
             <div className="spacer" />
             <span className="label">Dev buy (SOL)</span>
             <input className="inp" value={devBuy} onChange={(e) => setDevBuy(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" style={{ width: 120 }} />
+          </>
+        )}
+        {(mode === 'self' || mode === 'antibundle') && (
+          <>
             <div className="spacer" />
             <span className="label">Image</span>
             <label className="card" style={{ display: 'flex', alignItems: 'center', gap: 12, cursor: 'pointer' }}>
@@ -241,10 +308,14 @@ export default function Launch() {
           connected
             ? <button className="btn green" disabled={!canSelf} onClick={launchSelf}>{busy ? <><span className="spin dark" /> {busy}</> : `Launch on ${venue === 'pump' ? 'Pump.fun' : 'Meteora'} →`}</button>
             : <button className="btn" onClick={() => login()}>Sign in with 𝕏 to launch</button>
+        ) : mode === 'antibundle' ? (
+          connected
+            ? <button className="btn green" disabled={!canAb} onClick={launchAntiBundle}>{busy ? <><span className="spin dark" /> {busy}</> : `Open the ${windowSec >= 60 ? `${Math.floor(windowSec / 60)}:${String(windowSec % 60).padStart(2, '0')}` : `${windowSec}s`} window →`}</button>
+            : <button className="btn" onClick={() => login()}>Sign in with 𝕏 to launch</button>
         ) : (
           <button className="btn green" disabled={!canTp} onClick={launchTrendsPay}>{busy ? <><span className="spin dark" /> {busy}</> : creator ? `Launch for @${creator.handle} →` : 'Pick a creator first'}</button>
         )}
-        <div className="hint" style={{ textAlign: 'center' }}>{mode === 'self' ? 'You pay the launch and keep the creator fees.' : 'Trends launches it and directs trading fees to the creator.'}</div>
+        <div className="hint" style={{ textAlign: 'center' }}>{mode === 'self' ? 'You pay the launch and keep the creator fees.' : mode === 'antibundle' ? 'Trends sponsors the launch. The presale window fills everyone at one price — unsnipeable.' : 'Trends launches it and directs trading fees to the creator.'}</div>
       </div>
       {node}
     </div>
