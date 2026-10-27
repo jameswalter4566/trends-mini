@@ -160,10 +160,19 @@ export default function Launch() {
         body: {
           action: 'launch', name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(),
           imageUrl, windowSeconds: windowSec, mode: abMode, perWalletCapSol: capSol ? Number(capSol) : null,
+          devBuySol: Number(devBuy) > 0 ? Number(devBuy) : undefined,
         },
       });
       if (error) throw new Error(error.message);
       if (data?.error) throw new Error(data.detail ? `${data.error}: ${JSON.stringify(data.detail).slice(0, 120)}` : String(data.error));
+      // DEV BUY at the opening price — the launcher signs their own first buy.
+      if (data?.devBuyTx) {
+        try {
+          setBusy('Sign dev buy…');
+          await signAndSendTransaction(Transaction.from(b64ToBytes(data.devBuyTx)));
+          toast(`Dev buy filled — ${devBuy} SOL ✓`);
+        } catch { toast('Launched, but dev buy failed — buy on the coin page'); }
+      }
       toast(`$${symbol.trim().toUpperCase()} window opened ✓`);
       setTimeout(() => nav(`/t/${data.mint}`), 900);
     } catch (e) { toast(e instanceof Error ? e.message : 'Launch failed'); }
@@ -225,6 +234,10 @@ export default function Launch() {
               <button className={'pill' + (abMode === 'open' ? ' on' : '')} style={{ flex: 1 }} onClick={() => setAbMode('open')}>Open</button>
             </div>
             <div className="hint">{abMode === 'app_only' ? 'Unbundleable: buyable only through Trends & FOMO until graduation. Pump.fun locked out.' : 'Fair window, then trades everywhere like a normal coin.'}</div>
+            <div className="spacer" />
+            <span className="label">Dev buy (optional, SOL)</span>
+            <input className="inp" value={devBuy} onChange={(e) => setDevBuy(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="0" style={{ width: 140 }} />
+            <div className="hint">You buy first at the opening price from your wallet; your wallet is whitelisted to trade this coin anytime.</div>
             <div className="spacer" />
             <span className="label">Per-wallet cap (optional, SOL)</span>
             <input className="inp" value={capSol} onChange={(e) => setCapSol(e.target.value.replace(/[^0-9.]/g, ''))} inputMode="decimal" placeholder="no cap" style={{ width: 140 }} />
