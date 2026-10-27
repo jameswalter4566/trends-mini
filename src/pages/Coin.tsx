@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { createChart, CandlestickSeries, type IChartApi, type ISeriesApi, type UTCTimestamp } from 'lightweight-charts';
-import { PublicKey } from '@solana/web3.js';
+import { PublicKey, Transaction } from '@solana/web3.js';
 import { openWatch, fetchCoinInfo, fetchHolders, fetchSocials, buildSwapTx, type CoinInfo, type Holders, type Socials, type LiveBar } from '../lib/stream';
 import { supabase } from '../lib/supa';
 import { useWallet } from '../lib/wallet';
@@ -64,9 +64,15 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
     const sol = parseFloat(contribAmt); if (!(sol > 0)) { toast('Enter a SOL amount'); return; }
     setAbBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke('presale-contribute', { body: { mint, amountSol: sol } });
-      if (error) throw new Error(error.message);
-      if (data?.error) throw new Error(String(data.error));
+      // Client-signed: build the SOL->vault transfer, sign it, then record.
+      const { data: b, error: be } = await supabase.functions.invoke('presale-contribute', { body: { action: 'build', mint, amountSol: sol, userWallet: address } });
+      if (be) throw new Error(be.message);
+      if (b?.error) throw new Error(String(b.error));
+      const bytes = Uint8Array.from(atob(b.txBase64), (c) => c.charCodeAt(0));
+      const sig = await signAndSendTransaction(Transaction.from(bytes));
+      const { data: r, error: re } = await supabase.functions.invoke('presale-contribute', { body: { action: 'record', mint, userWallet: address, signature: sig } });
+      if (re) throw new Error(re.message);
+      if (r?.error) throw new Error(String(r.error));
       toast(`Joined with ${sol} SOL ✓`); setContribAmt(''); fetchPresale();
     } catch (e) { toast(e instanceof Error ? e.message : 'Contribute failed'); }
     finally { setAbBusy(false); }
@@ -74,7 +80,7 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
   const withdraw = async () => {
     setAbBusy(true);
     try {
-      const { data, error } = await supabase.functions.invoke('presale-withdraw', { body: { mint } });
+      const { data, error } = await supabase.functions.invoke('presale-withdraw', { body: { mint, userWallet: address } });
       if (error) throw new Error(error.message);
       if (data?.error) throw new Error(String(data.error));
       toast(`Withdrew ${data.refundedSol} SOL ✓`); fetchPresale();
