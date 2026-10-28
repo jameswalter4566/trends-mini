@@ -18,7 +18,7 @@ const INTERVAL = 60;
  */
 export default function Coin({ embed = false }: { embed?: boolean }) {
   const { mint = '' } = useParams();
-  const { connected, address, connection, login, signAndSendTransaction } = useWallet();
+  const { connected, address, connection, login, signAndSendTransaction, signTransactionBytes } = useWallet();
   const { toast, node } = useToast();
 
   const [info, setInfo] = useState<CoinInfo | null>(null);
@@ -64,13 +64,14 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
     const sol = parseFloat(contribAmt); if (!(sol > 0)) { toast('Enter a SOL amount'); return; }
     setAbBusy(true);
     try {
-      // Client-signed: build the SOL->vault transfer, sign it, then record.
+      // Reliable client-signed deposit: build the SOL->vault transfer, SIGN it (no client
+      // send), then hand the signed bytes to the backend to broadcast + record.
       const { data: b, error: be } = await supabase.functions.invoke('presale-contribute', { body: { action: 'build', mint, amountSol: sol, userWallet: address } });
       if (be) throw new Error(be.message);
       if (b?.error) throw new Error(String(b.error));
       const bytes = Uint8Array.from(atob(b.txBase64), (c) => c.charCodeAt(0));
-      const sig = await signAndSendTransaction(Transaction.from(bytes));
-      const { data: r, error: re } = await supabase.functions.invoke('presale-contribute', { body: { action: 'record', mint, userWallet: address, signature: sig } });
+      const signedTx = await signTransactionBytes(Transaction.from(bytes));
+      const { data: r, error: re } = await supabase.functions.invoke('presale-contribute', { body: { action: 'submit', mint, userWallet: address, signedTx, lastValidBlockHeight: b.lastValidBlockHeight } });
       if (re) throw new Error(re.message);
       if (r?.error) throw new Error(String(r.error));
       toast(`Joined with ${sol} SOL ✓`); setContribAmt(''); fetchPresale();

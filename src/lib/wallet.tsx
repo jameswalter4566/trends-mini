@@ -80,6 +80,19 @@ export function useWallet() {
     return sig;
   }
 
+  // Sign ONLY — return signed tx bytes (base64), NO broadcast. The reliable presale-deposit
+  // path hands these to the backend, which broadcasts via its rebroadcast/confirm loop.
+  async function signTransactionBytes(tx: Transaction | VersionedTransaction): Promise<string> {
+    if (!wallet) throw new Error('Wallet not connected');
+    const bytes = tx instanceof VersionedTransaction
+      ? tx.serialize()
+      : tx.serialize({ requireAllSignatures: false, verifySignatures: false });
+    const { signedTransaction } = await signTransaction({ transaction: new Uint8Array(bytes), wallet, chain: 'solana:mainnet' });
+    const u = signedTransaction as Uint8Array;
+    let s = ''; for (let i = 0; i < u.length; i++) s += String.fromCharCode(u[i]);
+    return btoa(s);
+  }
+
   return {
     ready,
     address,
@@ -92,5 +105,6 @@ export function useWallet() {
     logout: () => logout(),
     exportKey: () => (address ? exportWallet({ address }) : Promise.resolve()),
     signAndSendTransaction,
+    signTransactionBytes,
   };
 }
