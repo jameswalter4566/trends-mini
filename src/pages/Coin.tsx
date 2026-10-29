@@ -45,6 +45,14 @@ export default function Coin({ embed = false }: { embed?: boolean }) {
   const [abBusy, setAbBusy] = useState(false);
 
   const fetchPresale = async () => {
+    // Deferred launches: during the window the record lives in presale_launches (no coin
+    // on-chain yet). Fall back to token_launches once settled / for legacy coins.
+    const { data: pl } = await supabase.from('presale_launches')
+      .select('post_window_mode, presale_status, presale_end, presale_raised_sol, presale_contributors, per_wallet_cap_sol')
+      .eq('token_mint', mint).maybeSingle();
+    if (pl && (pl.presale_status === 'open' || pl.presale_status === 'settling')) {
+      setPresale({ is_gated: true, ...pl } as Presale); return;
+    }
     const { data } = await supabase.from('token_launches')
       .select('is_gated, post_window_mode, presale_status, presale_end, presale_raised_sol, presale_contributors, per_wallet_cap_sol')
       .eq('token_mint', mint).maybeSingle();

@@ -26,7 +26,7 @@ function b64ToBytes(b64: string): Uint8Array {
 export default function Launch() {
   const nav = useNavigate();
   const [sp] = useSearchParams();
-  const { connected, address, login, signAndSendTransaction } = useWallet();
+  const { connected, address, login, signAndSendTransaction, signTransactionBytes } = useWallet();
   const { toast, node } = useToast();
 
   const [mode, setMode] = useState<Mode>('self');
@@ -160,18 +160,22 @@ export default function Launch() {
         body: {
           action: 'launch', name: name.trim(), symbol: symbol.trim().toUpperCase(), description: desc.trim(),
           imageUrl, windowSeconds: windowSec, mode: abMode, perWalletCapSol: capSol ? Number(capSol) : null,
-          devBuySol: Number(devBuy) > 0 ? Number(devBuy) : undefined,
         },
       });
       if (error) throw new Error(error.message);
       if (data?.error) throw new Error(data.detail ? `${data.error}: ${JSON.stringify(data.detail).slice(0, 120)}` : String(data.error));
-      // DEV BUY at the opening price — the launcher signs their own first buy.
-      if (data?.devBuyTx) {
+      // Deferred creation: no coin exists until the window closes, so the "dev buy" is just
+      // the dev's own contribution to the window (same clearing price as everyone).
+      if (Number(devBuy) > 0 && connected && address) {
         try {
-          setBusy('Sign dev buy…');
-          await signAndSendTransaction(Transaction.from(b64ToBytes(data.devBuyTx)));
-          toast(`Dev buy filled — ${devBuy} SOL ✓`);
-        } catch { toast('Launched, but dev buy failed — buy on the coin page'); }
+          setBusy('Sign dev contribution…');
+          const { data: b, error: be } = await supabase.functions.invoke('presale-contribute', { body: { action: 'build', mint: data.mint, amountSol: Number(devBuy), userWallet: address } });
+          if (be || b?.error) throw new Error(be?.message || String(b?.error));
+          const signedTx = await signTransactionBytes(Transaction.from(b64ToBytes(b.txBase64)));
+          const { data: s, error: se } = await supabase.functions.invoke('presale-contribute', { body: { action: 'submit', mint: data.mint, userWallet: address, signedTx, lastValidBlockHeight: b.lastValidBlockHeight } });
+          if (se || s?.error) throw new Error(se?.message || String(s?.error));
+          toast(`Dev contribution in — ${devBuy} SOL ✓`);
+        } catch { toast('Window opened, but the dev contribution failed — join on the coin page'); }
       }
       toast(`$${symbol.trim().toUpperCase()} window opened ✓`);
       setTimeout(() => nav(`/t/${data.mint}`), 900);
